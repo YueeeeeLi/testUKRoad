@@ -39,13 +39,13 @@ if __name__ == "__main__":
     with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
         urban_speed_dict = json.load(f)
 
-    # road networks (urban_filter_revised + tolls)
+    # road networks (urban_filter: mannual correction)
     road_node_file = gpd.read_parquet(
         base_path / "networks" / "road" / "road_node_file.geoparquet"
     )
     road_link_file = gpd.read_parquet(
         base_path / "networks" / "road" / "road_link_file.geoparquet"
-    )  # !!! delete the tolls information
+    )
 
     # O-D matrix (2021)
     od_node_2021 = pd.read_csv(
@@ -61,9 +61,6 @@ if __name__ == "__main__":
     test_net_ig, edge_cost_dict, edge_timeC_dict, edge_operateC_dict = (
         func.create_igraph_network(road_link_file, road_node_file, free_flow_speed_dict)
     )  # this returns a network and edge weights dict(edge_name, edge_weight)
-    edge_index_to_name = {
-        idx: name for idx, name in enumerate(test_net_ig.es["edge_name"])
-    }
 
     # network initialisation
     road_link_file = func.initialise_igraph_network(
@@ -98,6 +95,4 @@ if __name__ == "__main__":
     road_link_file.acc_capacity = road_link_file.acc_capacity.astype(int)
 
     # export files
-    road_link_file.to_parquet(
-        base_path.parent / "outputs" / "p_road_gb_2021_revised.gpkg"
-    )
+    road_link_file.to_parquet(base_path.parent / "outputs" / "gb_edge_flows.geoparquet")

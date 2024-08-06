@@ -13,10 +13,21 @@ from utils import load_config
 output_path = Path(load_config()["paths"]["outputs"])
 base_path = Path(load_config()["paths"]["base_path"])
 
-simulation = gpd.read_parquet(output_path / "p_road_gb_2021_revised.gpkg")
+simulation = gpd.read_parquet(
+    output_path / "p_road_gb_2021_revised_doubled_changed_0717.gpkg"
+)
 observation = gpd.read_parquet(
     base_path / "networks" / "road" / "link_traffic_counts.geoparquet"
 )
+
+# %%
+temp_dict = observation.set_index("e_id")["Cars_and_taxis"].to_dict()
+simulation["obs"] = simulation["e_id"].map(temp_dict)
+simulation["simu-obs"] = simulation.acc_flow - simulation.obs * 1.6
+simulation["diff"] = np.nan
+simulation.loc[simulation["simu-obs"] > 0, "diff"] = 1
+simulation.loc[simulation["simu-obs"] < 0, "diff"] = -1
+# simulation.to_parquet(output_path / "diff_0717.geoparquet")
 
 # %%
 temp = pd.DataFrame(
@@ -36,8 +47,8 @@ temp_M = temp[temp.type == "M"]
 temp_A = temp[(temp.type == "A_single") | (temp.type == "A_dual")]
 
 # %%
-simulation_values = np.array(temp_A.simu)
-observation_values = np.array(temp_A.obs)
+simulation_values = np.array(temp_B.sort_values(by=["obs"]).simu)
+observation_values = np.array(temp_B.sort_values(by=["obs"]).obs)
 
 # Pearson's correlation coefficient
 pearson_corr, _ = pearsonr(simulation_values, observation_values)

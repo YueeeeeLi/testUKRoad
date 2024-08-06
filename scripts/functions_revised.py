@@ -366,6 +366,9 @@ def initialise_igraph_network(
     # average edge flow rates (miles/hour)
     road_links["ave_flow_rate"] = road_links["combined_label"].map(initial_speed_dict)
 
+    # remove edges with zero capacities
+    road_links = road_links[road_links.acc_capacity > 0].reset_index(drop=True)
+
     return road_links
 
 

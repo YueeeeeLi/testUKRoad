@@ -21,6 +21,7 @@ verisk = gpd.read_file(
     engine="pyogrio",
 )  # geometry: polygon (5mins)
 
+# %%
 # Roads
 road_node_file = gpd.read_parquet(
     base_path / "networks" / "road" / "road_node_file.geoparquet"

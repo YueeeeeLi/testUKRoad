@@ -33,7 +33,7 @@ pop11_Scot = pd.read_csv(os.path.join(base_path, "pop11_scot.csv"))
 pop11_Scot_lsoa = pop11_Scot.groupby("LSOA11CD", as_index=False).agg({"Popcount": sum})
 pop11_Scot_oa = pop11_Scot[["OA11CD", "Popcount"]]
 
-# population 21 at LSOA
+# Scottish population 21 at LSOA level
 pop21_Scot_lsoa = pd.read_excel(
     os.path.join(base_path, "sape-2021.xlsx"), sheet_name="Sheet1"
 )
@@ -41,7 +41,7 @@ pop21_Scot_lsoa.rename(
     columns={"Data zone code": "LSOA21CD", "Total population": "Popcount"}, inplace=True
 )
 
-# (estimate) population 21 at OA
+# (estimate) Scottish population 21 at OA
 temp_pop = pd.merge(pop11_Scot, pop11_Scot_lsoa, on="LSOA11CD", how="left")
 temp_pop["oa/lsoa"] = temp_pop.Popcount_x / temp_pop.Popcount_y
 dict_ratio = defaultdict(lambda: defaultdict(list))
