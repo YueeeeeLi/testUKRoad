@@ -112,7 +112,7 @@ def label_urban_roads(
 def voc_func(speed: float) -> float:  # speed: mile/hour
     s = speed * cons.CONV_MILE_TO_KM  # km/hour
     # unit fuel cost is a function of speed
-    lpkm = 0.178 - 0.00299 * s + 0.0000205 * (s**2)  # fuel cost (liter/km)
+    lpkm = 0.178 - 0.00299 * s + 0.0000205 * (s**2)  # fuel consumption (liter/km)
     voc = 140 * lpkm * cons.PENCE_TO_POUND  # average petrol cost: 140 pence/liter
     return voc
 
@@ -124,7 +124,7 @@ def cost_func(
     voc: float,
 ) -> Tuple[float, float, float]:  # time: hour, distance: mile/hour, voc: pound/km
     ave_occ = 1.6  # occupancy per trip: average car = 1.6 passenger car
-    vot = 20  # value of time: 20 pounds/hour
+    vot = 17.69  # value of time: 17.69 pounds/hour
     d = distance * cons.CONV_MILE_TO_KM  # km
     c_time = time * ave_occ * vot
     c_operating = d * voc
@@ -150,11 +150,11 @@ def initial_speed_func(
         return None
 
 
-# update speed (mile/hour) according to edge capacities (car/day)
+# update speed (mile/hour) according to edge flow (car/day)
 def speed_flow_func(
     road_type: str,
     isurban: int,
-    vp: float,
+    vp: float,  # edge flow
     free_flow_speed_dict: dict,
     flow_breakpoint_dict: dict,
     min_speed_cap: dict,
@@ -243,9 +243,6 @@ def find_nearest_node(zones: gpd.GeoDataFrame, road_nodes: gpd.GeoDataFrame) -> 
 
 
 # interpret od matrix
-# {list of origins,
-# list of destinations attached to each origin
-# list of supplies from each origin}
 def od_interpret(
     od_matrix: pd.DataFrame,
     zone_to_node: dict,
@@ -282,7 +279,6 @@ def od_interpret(
 
 # network creation
 def create_igraph_network(
-    # name_to_index: dict,
     road_links: gpd.GeoDataFrame,
     road_nodes: gpd.GeoDataFrame,
     initialSpeeds: dict,
@@ -348,14 +344,21 @@ def initialise_igraph_network(
     road_links["road_type_label"] = road_links[col_road_classification].str[0]
     # road_forms: M, A_dual, A_single, B
     road_links["combined_label"] = road_links["road_type_label"]
-    road_links.loc[road_links.road_type_label == "A", "combined_label"] = "A_dual"
+    # A_single: all the other types of A roads except (collapsed) dual carriageway
+    road_links.loc[road_links.road_type_label == "A", "combined_label"] = "A_single"
+    # A_dual: (collapsed) dual carriageway
     road_links.loc[
         (
             (road_links.road_type_label == "A")
-            & (road_links.form_of_way.str.contains("Single"))
+            & (
+                road_links.form_of_way.isin(
+                    ["Dual Carriageway", "Collapsed Dual Carriageway"]
+                )
+            )
         ),
         "combined_label",
-    ] = "A_single"  # only single carriageways of A roads
+    ] = "A_dual"
+
     # accumulated edge flows (cars/day)
     road_links["acc_flow"] = 0.0
     # remaining edge capacities (cars/day)
@@ -438,7 +441,12 @@ def update_network_structure(
     )  # hours
 
     if np.isnan(timeList).any():
+        idx_first_nan = np.where(np.isnan(timeList))[0][0]
+        length_nan = lengthList[idx_first_nan]
+        speed_nan = speedList[idx_first_nan]
         print("ERROR: Network contains congested edges.")
+        print(f"The first nan time - length: {length_nan}")
+        print(f"The first nan time - speed: {speed_nan}")
         exit()
     else:
         vocList = np.vectorize(voc_func)(speedList)
@@ -577,7 +585,9 @@ def network_flow_model(
         # calculate edge flows
         # [edge_name, flow]
         temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_idx", "path", "flow")
-        # !!! update the available edges after network structure alteration
+
+        # update the usable edges
+        # (the fully utilised edges were removed from network structure alteration)
         edge_index_to_name = {
             idx: network.es[idx]["edge_name"] for idx in range(len(network.es))
         }
