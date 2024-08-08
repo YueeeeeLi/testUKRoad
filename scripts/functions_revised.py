@@ -1,6 +1,6 @@
 # %%
 from typing import Union, Tuple
-from collections import defaultdict
+from collections import defaultdict, ChainMap
 from functools import partial
 import numpy as np
 import pandas as pd
@@ -11,13 +11,17 @@ from utils import get_flow_on_edges
 from tqdm.auto import tqdm
 from multiprocessing import Pool
 import warnings
+import pickle
 
 warnings.simplefilter("ignore")
 
 
 # %%
 # functions
-# extract od pair information: list_of_origin_node, dict_of_destination_nodes, dict_of_origin_supplies
+# extract od pair information:
+# list_of_origin_node,
+# dict_of_destination_nodes,
+# dict_of_origin_supplies
 def extract_od_pairs(
     od: pd.DataFrame,
 ) -> Tuple[list, dict[str, list[str]], dict[str, list[int]]]:
@@ -73,7 +77,7 @@ def select_partial_roads(
     return selected_links, selected_nodes
 
 
-# urban road classification
+# urban filter creation
 def create_urban_mask(etisplus_urban_roads: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     etisplus_urban_roads = etisplus_urban_roads[
         etisplus_urban_roads["Urban"] == 1
@@ -96,6 +100,7 @@ def create_urban_mask(etisplus_urban_roads: gpd.GeoDataFrame) -> gpd.GeoDataFram
     return urban_mask
 
 
+# urban road classification
 def label_urban_roads(
     road_links: gpd.GeoDataFrame, urban_mask: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
@@ -108,7 +113,7 @@ def label_urban_roads(
     return road_links
 
 
-# value of cost (£/km)
+# vehicle operating costs (£/km)
 def voc_func(speed: float) -> float:  # speed: mile/hour
     s = speed * cons.CONV_MILE_TO_KM  # km/hour
     # unit fuel cost is a function of speed
@@ -117,19 +122,39 @@ def voc_func(speed: float) -> float:  # speed: mile/hour
     return voc
 
 
-# cost function (£)
+# cost function (£): vot & voc
 def cost_func(
     time: float,
     distance: float,
     voc: float,
 ) -> Tuple[float, float, float]:  # time: hour, distance: mile/hour, voc: pound/km
+    """Calculate the travel costs
+
+    Parameters
+    ----------
+    time: float
+        The time of travel: hour
+    distance: float
+        The distance of travel: mile
+    voc:
+        Value of Cost: £/km
+
+    Returns
+    -------
+    cost: float
+        The total travel costs: £
+    c_time: float
+        The time-equivalent costs: £
+    c_operate: float
+        The vehicle operating costs/fuel costs: £
+    """
     ave_occ = 1.6  # occupancy per trip: average car = 1.6 passenger car
     vot = 17.69  # value of time: 17.69 pounds/hour
     d = distance * cons.CONV_MILE_TO_KM  # km
     c_time = time * ave_occ * vot
-    c_operating = d * voc
+    c_operate = d * voc
     cost = time * ave_occ * vot + d * voc  # pound
-    return cost, c_time, c_operating
+    return cost, c_time, c_operate
 
 
 # initialise free-flow speeds (mile/hour)
@@ -426,7 +451,7 @@ def update_network_structure(
         idx for idx, element in enumerate(net_edges) if element in zero_capacity_edges
     ]
 
-    # drop links that have reached their full capacities
+    # drop fully utilised edges
     network.delete_edges(idx_to_remove)
     number_of_edges = len(list(network.es))
     print(f"The remaining number of edges in the network: {number_of_edges}")
@@ -488,9 +513,9 @@ def cauculate_total_weight(list_of_paths: list, network: igraph.Graph) -> float:
     return total_weight
 
 
-def find_least_cost_path(params):
-    network, idx_of_origin_node, list_of_idx_destination_node, flows = params
-    paths = network.get_shortest_paths(
+def find_least_cost_path(params: Tuple):
+    idx_of_origin_node, list_of_idx_destination_node, flows = params
+    paths = shared_network.get_shortest_paths(
         v=idx_of_origin_node,
         to=list_of_idx_destination_node,
         weights="weight",
@@ -503,6 +528,20 @@ def find_least_cost_path(params):
         paths,
         flows,
     )
+
+
+def compute_edge_costs(origin, destination, path):
+    cost_dict = defaultdict(float)
+    for edge_idx in path:
+        edge_weight = shared_network.es[edge_idx]["weight"]
+        cost_dict[(origin, destination)] += edge_weight
+    return dict(cost_dict)
+
+
+def worker_init(shared_network_pkl):
+    global shared_network
+    shared_network = pickle.loads(shared_network_pkl)
+    return
 
 
 def network_flow_model(
@@ -519,6 +558,9 @@ def network_flow_model(
     min_speed_cap: dict,
     urban_speed_cap: dict,
 ) -> Tuple[dict, dict, dict]:
+
+    # dump the network for shared usage in multiprocess
+    shared_network_pkl = pickle.dumps(network)
 
     # record total cost of travelling: weight * flow
     total_cost = 0
@@ -555,22 +597,29 @@ def network_flow_model(
     # starts
     iter_flag = 1
     total_non_allocated_flow = 0
+    od_cost_dict = defaultdict(float)
     while total_remain > 0:
         print(f"No.{iter_flag} iteration starts:")
         list_of_spath = []
         args = []
         # find the shortest path for each origin-destination pair
-        for i in tqdm(range(len(list_of_origins)), desc="Processing"):
+        for i in range(len(list_of_origins)):
             name_of_origin_node = list_of_origins[i]
             list_of_name_destination_node = destination_dict[
                 name_of_origin_node
             ]  # a list of destination nodes
-            flows = supply_dict[name_of_origin_node]
+            list_of_flows = supply_dict[name_of_origin_node]
             args.append(
-                (network, name_of_origin_node, list_of_name_destination_node, flows)
+                (
+                    # network,
+                    name_of_origin_node,
+                    list_of_name_destination_node,
+                    list_of_flows,
+                )
             )
-
-        with Pool(processes=6) as pool:  # define the number of CPUs to be used
+        with Pool(
+            processes=3, initializer=worker_init, initargs=(shared_network_pkl,)
+        ) as pool:  # define the number of CPUs to be used
             list_of_spath = pool.map(find_least_cost_path, args)
             # [origin(name), destinations(name), path(idx), flow(int)]
 
@@ -584,6 +633,29 @@ def network_flow_model(
                 "flow",
             ],
         ).explode(["destination", "path", "flow"])
+
+        # compute the total travel cost (£) for individual OD pairs
+        # revise this function to multiprocessing
+        args = []
+        args = [
+            (
+                row["origin"],
+                row["destination"],
+                row["path"],
+            )
+            for _, row in temp_flow_matrix.iterrows()
+        ]
+
+        with Pool(
+            processes=3, initializer=worker_init, initargs=(shared_network_pkl,)
+        ) as pool:
+            od_unit_cost_dict = pool.starmap(compute_edge_costs, args)
+        # to combine multiple dicts to one: dict[origin_name, destination_name] = total_weight
+        od_unit_cost_dict = dict(ChainMap(*od_unit_cost_dict))
+        temp_flow_matrix["unit_od_cost"] = temp_flow_matrix.apply(
+            lambda row: od_unit_cost_dict.get((row["origin"], row["destination"]), 0),
+            axis=1,
+        )
 
         # calculate edge flows
         # [edge_name, flow]
@@ -650,7 +722,7 @@ def network_flow_model(
                 }
             )
 
-            # update traveling costs (£)
+            # update the total travel costs (£)
             temp_cost = (
                 temp_edge_flow["e_id"].map(edge_cost_dict) * temp_edge_flow["flow"]
             )
@@ -663,6 +735,16 @@ def network_flow_model(
                 temp_edge_flow["e_id"].map(edge_operateC_dict) * temp_edge_flow["flow"]
             )
             operating_cost += temp_cost.sum()
+
+            # update the od trave cost (£)
+            # store the od costs: unit_od_cost * adjusted_flows
+            temp_flow_matrix["od_cost"] = (
+                temp_flow_matrix["unit_od_cost"] * temp_flow_matrix["flow"]
+            )
+            # update the od_cost_dict
+            for _, row in temp_flow_matrix.iterrows():
+                od_cost_dict[(row["origin"], row["destination"])] += row["od_cost"]
+
             print("Iteration stops: there is no edge overflow.")
             break
 
@@ -689,6 +771,14 @@ def network_flow_model(
             temp_flow_matrix["path"].apply(lambda x: len(x) != 0)
         ]
         temp_flow_matrix["flow"] = temp_flow_matrix["flow"] * r
+
+        # store the od costs: unit_od_cost * adjusted_flows
+        temp_flow_matrix["od_cost"] = (
+            temp_flow_matrix["unit_od_cost"] * temp_flow_matrix["flow"]
+        )
+        # pdate the od_cost_dict
+        for _, row in temp_flow_matrix.iterrows():
+            od_cost_dict[(row["origin"], row["destination"])] += row["od_cost"]
 
         # update edge flows
         temp_edge_flow["adjusted_flow"] = temp_edge_flow["flow"] * r
@@ -760,7 +850,10 @@ def network_flow_model(
             edge_timeC_dict,
             edge_operateC_dict,
         ) = update_network_structure(
-            network, edge_length_dict, acc_speed_dict, temp_edge_flow
+            network,
+            edge_length_dict,
+            acc_speed_dict,
+            temp_edge_flow,
         )
 
         iter_flag += 1
@@ -770,4 +863,4 @@ def network_flow_model(
     print(f"total time-equiv cost is (£): {time_equiv_cost}")
     print(f"total operating cost is (£): {operating_cost}")
     print(f"The total non-allocated flow is {total_non_allocated_flow}")
-    return acc_speed_dict, acc_flow_dict, acc_capacity_dict
+    return acc_speed_dict, acc_flow_dict, acc_capacity_dict, od_cost_dict

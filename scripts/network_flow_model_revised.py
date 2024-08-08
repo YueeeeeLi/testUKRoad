@@ -2,6 +2,7 @@
 Some updates:
 - cost function: £ (delete toll costs)
 - speed flow curves (B roads: same as A_Single)
+- od travel costs: £ (unit od cost * adjusted od flows)
 
 List of inputs:
 - Parameter dicts
@@ -71,7 +72,12 @@ if __name__ == "__main__":
     )
 
     # flow simulation
-    speed_dict, acc_flow_dict, acc_capacity_dict = func.network_flow_model(
+    (
+        speed_dict,
+        acc_flow_dict,
+        acc_capacity_dict,
+        od_cost_dict,
+    ) = func.network_flow_model(
         test_net_ig,  # network
         edge_cost_dict,  # total cost
         edge_timeC_dict,  # value of time
@@ -85,14 +91,19 @@ if __name__ == "__main__":
         min_speed_dict,  # speed
         urban_speed_dict,  # speed
     )
+
     # append estimation of: speeds, flows, and remaining capacities
     road_link_file.ave_flow_rate = road_link_file.e_id.map(speed_dict)
     road_link_file.acc_flow = road_link_file.e_id.map(acc_flow_dict)
     road_link_file.acc_capacity = road_link_file.e_id.map(acc_capacity_dict)
-
     # change field types
     road_link_file.acc_flow = road_link_file.acc_flow.astype(int)
     road_link_file.acc_capacity = road_link_file.acc_capacity.astype(int)
+    # calculate od travel costs
+    od_node_2021["od_cost"] = od_node_2021.apply(
+        lambda row: od_cost_dict[(row["origin_node"], row["destination_node"])], axis=1
+    )
 
     # export files
     road_link_file.to_parquet(base_path.parent / "outputs" / "gb_edge_flows.geoparquet")
+    od_node_2021.to_csv(base_path.parent / "outputs" / "od_costs.csv", index=False)
